@@ -15,8 +15,20 @@ groq_key = os.getenv("GROQ_API_KEY")
 groq_model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 mongo_uri = os.getenv("MONGO_URI", "mongodb://127.0.0.1:27017/smartcity_db")
-client = MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
-db = client.get_database()
+local_fallback_uri = "mongodb://127.0.0.1:27017/smartcity_db"
+
+try:
+    client = MongoClient(mongo_uri, serverSelectionTimeoutMS=8000, tls=True, tlsAllowInvalidCertificates=True)
+    client.admin.command("ping")
+    db = client.get_database()
+except Exception:
+    try:
+        client = MongoClient(mongo_uri, serverSelectionTimeoutMS=8000)
+        client.admin.command("ping")
+        db = client.get_database()
+    except Exception:
+        client = MongoClient(local_fallback_uri, serverSelectionTimeoutMS=8000)
+        db = client.get_database()
 
 
 def extract_text_from_pdf(file_path):
@@ -78,20 +90,39 @@ def chunk_extracted_content(extracted_content, file_type, chunk_size=800, chunk_
 
 def generate_embedding(text):
     if not genai_key:
-        return [0.0] * 768
+        return None
     try:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key={genai_key}"
         res = requests.post(url, json={"content": {"parts": [{"text": text}]}}, timeout=15)
         if res.status_code == 200:
             return res.json()["embedding"]["values"]
-        return [0.0] * 768
+        print(f"Embedding API error {res.status_code}: {res.text[:100]}")
+        return None
     except Exception as e:
         print(f"Embedding exception: {e}")
-        return [0.0] * 768
+        return None
 
 
 def generate_query_embedding(query_text):
     return generate_embedding(query_text)
+
+
+def keyword_search(query, top_k=5):
+    """Fallback: score chunks by keyword overlap when embeddings are unavailable."""
+    query_words = set(re.sub(r'[^\w\s]', '', query.lower()).split())
+    stopwords = {'what', 'is', 'the', 'a', 'an', 'of', 'in', 'are', 'for', 'to', 'how', 'do', 'i', 'can', 'me', 'tell', 'about'}
+    query_words -= stopwords
+    if not query_words:
+        return []
+    all_chunks = list(db.chunks.find({}, {"text": 1, "filename": 1, "metadata": 1}))
+    scored = []
+    for c in all_chunks:
+        chunk_words = set(re.sub(r'[^\w\s]', '', c["text"].lower()).split())
+        overlap = len(query_words & chunk_words)
+        if overlap > 0:
+            scored.append({"filename": c["filename"], "text": c["text"], "metadata": c["metadata"], "score": overlap / len(query_words)})
+    scored.sort(key=lambda x: x["score"], reverse=True)
+    return scored[:top_k]
 
 
 def cosine_similarity(v1, v2):
@@ -118,13 +149,14 @@ def ingest_document(doc_id, filename, file_path):
     chunks = chunk_extracted_content(extracted, file_type)
     chunk_docs = []
     for idx, c in enumerate(chunks):
+        emb = generate_embedding(c["text"])
         chunk_docs.append({
             "document_id": doc_id,
             "filename": filename,
             "chunk_index": idx,
             "text": c["text"],
             "metadata": c["metadata"],
-            "embedding": generate_embedding(c["text"])
+            "embedding": emb if emb is not None else [0.0] * 768
         })
     if chunk_docs:
         db.chunks.insert_many(chunk_docs)
@@ -257,21 +289,29 @@ def query_rag_pipeline(query, conversation_history=None, user_language="en", top
         conversation_history = []
 
     query_emb = generate_query_embedding(query)
-    all_chunks = list(db.chunks.find({}, {"embedding": 1, "text": 1, "filename": 1, "metadata": 1}))
+    
+    # If embedding failed (API key invalid/expired), fall back to keyword search
+    if query_emb is None:
+        print("[RAG] Embedding unavailable, using keyword search fallback")
+        valid_chunks = keyword_search(query, top_k)
+        best_score = valid_chunks[0]["score"] if valid_chunks else 0
+    else:
+        all_chunks = list(db.chunks.find({}, {"embedding": 1, "text": 1, "filename": 1, "metadata": 1}))
 
-    if not all_chunks:
-        return {
-            "answer": "No city documents have been uploaded yet. Please contact the administrator.",
-            "citations": [], "confidence": 0, "sentiment": "neutral", "follow_up_suggestions": []
-        }
+        if not all_chunks:
+            return {
+                "answer": "No city documents have been uploaded yet. Please contact the administrator.",
+                "citations": [], "confidence": 0, "sentiment": "neutral", "follow_up_suggestions": []
+            }
 
-    scored_chunks = sorted([
-        {"filename": c["filename"], "text": c["text"], "metadata": c["metadata"],
-         "score": cosine_similarity(query_emb, c["embedding"])}
-        for c in all_chunks
-    ], key=lambda x: x["score"], reverse=True)
+        scored_chunks = sorted([
+            {"filename": c["filename"], "text": c["text"], "metadata": c["metadata"],
+             "score": cosine_similarity(query_emb, c["embedding"])}
+            for c in all_chunks
+        ], key=lambda x: x["score"], reverse=True)
 
-    valid_chunks = [c for c in scored_chunks[:top_k] if c["score"] > 0.2]
+        valid_chunks = [c for c in scored_chunks[:top_k] if c["score"] > 0.2]
+        best_score = valid_chunks[0]["score"] if valid_chunks else 0
 
     casual_keywords = ['ok', 'thanks', 'thank you', 'hi', 'hello', 'hey', 'bye', 'goodbye',
                        'yes', 'no', 'sure', 'cool', 'nice', 'good', 'great', 'awesome', 'lol', 'haha']
@@ -283,7 +323,6 @@ def query_rag_pipeline(query, conversation_history=None, user_language="en", top
             "citations": [], "confidence": 0, "sentiment": "neutral", "follow_up_suggestions": []
         }
 
-    best_score = valid_chunks[0]["score"] if valid_chunks else 0
     confidence_percentage = int(min(max(best_score * 100, 10), 99)) if valid_chunks else 0
 
     context_str = ""

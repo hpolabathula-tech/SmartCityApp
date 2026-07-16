@@ -8,6 +8,7 @@ export default function UserPreferences({ onClose, onSave }) {
   });
   const [savedQueries, setSavedQueries] = useState([]);
   const [loading, setLoading] = useState(false);
+  const API_BASE = import.meta.env.VITE_API_URL || 'http://127.0.0.1:5000/api';
 
   useEffect(() => {
     fetchSavedQueries();
@@ -16,7 +17,7 @@ export default function UserPreferences({ onClose, onSave }) {
   const fetchSavedQueries = async () => {
     try {
       const token = localStorage.getItem('token');
-      const response = await fetch('http://127.0.0.1:5000/api/citizen/saved-queries', {
+      const response = await fetch(`${API_BASE}/citizen/saved-queries`, {
         headers: { 'Authorization': token ? `Bearer ${token}` : '' },
       });
       if (response.ok) {
@@ -37,7 +38,7 @@ export default function UserPreferences({ onClose, onSave }) {
   const handleDeleteSavedQuery = async (queryId) => {
     try {
       const token = localStorage.getItem('token');
-      await fetch(`http://127.0.0.1:5000/api/citizen/saved-queries/${queryId}`, {
+      await fetch(`${API_BASE}/citizen/saved-queries/${queryId}`, {
         method: 'DELETE',
         headers: { 'Authorization': token ? `Bearer ${token}` : '' },
       });

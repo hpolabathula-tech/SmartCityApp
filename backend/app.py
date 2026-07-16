@@ -35,15 +35,38 @@ app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 
 # MongoDB client (supports both local and Atlas SRV URIs)
 mongo_uri = os.getenv("MONGO_URI", "mongodb://127.0.0.1:27017/smartcity_db")
-client = MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
-db = client.get_database()
+local_fallback_uri = "mongodb://127.0.0.1:27017/smartcity_db"
+db = None
 
-# Verify connection on startup
+def _try_connect(uri, **kwargs):
+    c = MongoClient(uri, serverSelectionTimeoutMS=8000, **kwargs)
+    c.admin.command("ping")
+    return c
+
+# Verify connection on startup — try Atlas with TLS workarounds, then local
 try:
-    client.admin.command("ping")
-    print("[DB] Successfully connected to MongoDB.")
-except Exception as e:
-    print(f"[DB] WARNING: Could not connect to MongoDB: {e}")
+    client = _try_connect(mongo_uri, tls=True, tlsAllowInvalidCertificates=True)
+    print(f"[DB] Successfully connected to MongoDB Atlas.")
+    db = client.get_database()
+except Exception as e1:
+    print(f"[DB] Atlas TLS attempt failed: {e1}")
+    try:
+        client = _try_connect(mongo_uri)
+        print(f"[DB] Successfully connected to MongoDB Atlas (default TLS).")
+        db = client.get_database()
+    except Exception as e2:
+        print(f"[DB] WARNING: Could not connect to Atlas: {e2}")
+        if mongo_uri != local_fallback_uri:
+            try:
+                print(f"[DB] Trying local MongoDB fallback at {local_fallback_uri}...")
+                client = _try_connect(local_fallback_uri)
+                print(f"[DB] Successfully connected to local MongoDB.")
+                db = client.get_database()
+            except Exception as e3:
+                print(f"[DB] ERROR: Local MongoDB fallback also failed: {e3}")
+
+if db is None:
+    raise SystemExit("[DB] No MongoDB connection available. Set MONGO_URI or start local MongoDB.")
 
 # Helper: Seed default users and documents on startup
 def seed_users():
@@ -146,6 +169,8 @@ def token_required(f):
             current_user = db.users.find_one({"_id": ObjectId(data["user_id"])})
             if not current_user:
                 return jsonify({"message": "User not found"}), 401
+            if current_user.get("banned"):
+                return jsonify({"message": "Your account has been suspended"}), 403
         except jwt.ExpiredSignatureError:
             return jsonify({"message": "Token has expired"}), 401
         except Exception as e:
@@ -420,6 +445,142 @@ def delete_document(current_user, doc_id):
     db.chunks.delete_many({"document_id": doc_id})
     
     return jsonify({"message": "Document and associated vectors deleted successfully"}), 200
+
+# --- ADMIN ANALYTICS ROUTE ---
+
+@app.route("/api/admin/analytics", methods=["GET"])
+@token_required
+@admin_required
+def get_analytics(current_user):
+    # Top queries
+    pipeline = [
+        {"$group": {"_id": "$query", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}},
+        {"$limit": 5}
+    ]
+    top_queries = [{
+        "query": r["_id"], "count": r["count"]
+    } for r in db.query_activity.aggregate(pipeline)]
+
+    # Queries per hour (last 24h)
+    since = datetime.datetime.utcnow() - datetime.timedelta(hours=24)
+    hourly_pipeline = [
+        {"$match": {"timestamp": {"$gte": since}}},
+        {"$group": {"_id": {"$hour": "$timestamp"}, "count": {"$sum": 1}}},
+        {"$sort": {"_id": 1}}
+    ]
+    hourly = {r["_id"]: r["count"] for r in db.query_activity.aggregate(hourly_pipeline)}
+    peak_hours = [hourly.get(h, 0) for h in range(24)]
+
+    # Topic distribution
+    all_queries = [r["query"] for r in db.query_activity.find({}, {"query": 1})]
+    topics = {"Waste": 0, "Transport": 0, "Utilities": 0, "Regulations": 0, "Other": 0}
+    for q in all_queries:
+        q_lower = q.lower()
+        if any(w in q_lower for w in ["waste", "garbage", "trash"]):
+            topics["Waste"] += 1
+        elif any(w in q_lower for w in ["transport", "bus", "vehicle", "traffic"]):
+            topics["Transport"] += 1
+        elif any(w in q_lower for w in ["water", "electricity", "utility"]):
+            topics["Utilities"] += 1
+        elif any(w in q_lower for w in ["regulation", "rule", "law", "fee", "certificate"]):
+            topics["Regulations"] += 1
+        else:
+            topics["Other"] += 1
+
+    return jsonify({"top_queries": top_queries, "peak_hours": peak_hours, "topics": topics}), 200
+
+# --- ADMIN USER MANAGEMENT ROUTES ---
+
+@app.route("/api/admin/users", methods=["GET"])
+@token_required
+@admin_required
+def get_users(current_user):
+    users = list(db.users.find({}, {"password": 0}))
+    for u in users:
+        u["_id"] = str(u["_id"])
+        if "date_created" in u:
+            u["date_created"] = u["date_created"].strftime("%b %d, %Y")
+        u["banned"] = u.get("banned", False)
+    return jsonify(users), 200
+
+@app.route("/api/admin/users/<user_id>/ban", methods=["POST"])
+@token_required
+@admin_required
+def toggle_ban_user(current_user, user_id):
+    user = db.users.find_one({"_id": ObjectId(user_id)})
+    if not user:
+        return jsonify({"message": "User not found"}), 404
+    if user.get("role") == "admin":
+        return jsonify({"message": "Cannot ban admin users"}), 403
+    new_status = not user.get("banned", False)
+    db.users.update_one({"_id": ObjectId(user_id)}, {"$set": {"banned": new_status}})
+    return jsonify({"message": "User banned" if new_status else "User unbanned", "banned": new_status}), 200
+
+@app.route("/api/admin/users/<user_id>", methods=["DELETE"])
+@token_required
+@admin_required
+def delete_user(current_user, user_id):
+    user = db.users.find_one({"_id": ObjectId(user_id)})
+    if not user:
+        return jsonify({"message": "User not found"}), 404
+    if user.get("role") == "admin":
+        return jsonify({"message": "Cannot delete admin users"}), 403
+    db.users.delete_one({"_id": ObjectId(user_id)})
+    return jsonify({"message": "User deleted"}), 200
+
+# --- ADMIN DOCUMENT SEARCH ROUTE ---
+
+@app.route("/api/admin/search", methods=["GET"])
+@token_required
+@admin_required
+def search_documents(current_user):
+    q = request.args.get("q", "").strip()
+    if not q:
+        return jsonify([]), 200
+    results = list(db.chunks.find(
+        {"text": {"$regex": q, "$options": "i"}},
+        {"text": 1, "filename": 1, "metadata": 1}
+    ).limit(10))
+    for r in results:
+        r["_id"] = str(r["_id"])
+        r["excerpt"] = r["text"][:200] + "..." if len(r["text"]) > 200 else r["text"]
+        del r["text"]
+    return jsonify(results), 200
+
+# --- ADMIN BROADCAST ROUTES ---
+
+@app.route("/api/admin/broadcast", methods=["POST"])
+@token_required
+@admin_required
+def send_broadcast(current_user):
+    data = request.get_json()
+    if not data or not data.get("title") or not data.get("message"):
+        return jsonify({"message": "Title and message are required"}), 400
+    db.broadcasts.insert_one({
+        "title": data["title"],
+        "message": data["message"],
+        "priority": data.get("priority", "normal"),
+        "created_by": str(current_user["_id"]),
+        "timestamp": datetime.datetime.utcnow()
+    })
+    return jsonify({"message": "Broadcast sent successfully"}), 201
+
+@app.route("/api/admin/broadcast", methods=["GET"])
+@token_required
+def get_broadcasts(current_user):
+    broadcasts = list(db.broadcasts.find().sort("timestamp", -1).limit(20))
+    for b in broadcasts:
+        b["_id"] = str(b["_id"])
+        b["timestamp"] = b["timestamp"].strftime("%b %d, %I:%M %p")
+    return jsonify(broadcasts), 200
+
+@app.route("/api/admin/broadcast/<broadcast_id>", methods=["DELETE"])
+@token_required
+@admin_required
+def delete_broadcast(current_user, broadcast_id):
+    db.broadcasts.delete_one({"_id": ObjectId(broadcast_id)})
+    return jsonify({"message": "Broadcast deleted"}), 200
 
 # --- ADMIN STATS ROUTE ---
 

@@ -4,12 +4,13 @@ export default function FeedbackModal({ messageId, onClose, onSubmit }) {
   const [rating, setRating] = useState(0);
   const [feedback, setFeedback] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const API_BASE = import.meta.env.VITE_API_URL || 'http://127.0.0.1:5000/api';
 
   const handleSubmit = async () => {
     setSubmitting(true);
     try {
       const token = localStorage.getItem('token');
-      const response = await fetch('http://127.0.0.1:5000/api/citizen/feedback', {
+      const response = await fetch(`${API_BASE}/citizen/feedback`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
