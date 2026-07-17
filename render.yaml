@@ -1,0 +1,32 @@
+services:
+  # ─── Backend Web Service ────────────────────────────────────────────────────
+  - type: web
+    name: smartcityapp-backend
+    runtime: python
+    rootDir: SmartCityApp/backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    plan: free
+    envVars:
+      - key: MONGO_URI
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        value: llama-3.3-70b-versatile
+
+  # ─── Frontend Static Site ────────────────────────────────────────────────────
+  - type: web
+    name: smartcityapp-frontend
+    runtime: static
+    rootDir: SmartCityApp/frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    plan: free
+    envVars:
+      - key: VITE_API_URL
+        sync: false
