@@ -20,13 +20,11 @@ services:
         value: llama-3.3-70b-versatile
 
   # ─── Frontend Static Site ────────────────────────────────────────────────────
-  - type: web
+  - type: static
     name: smartcityapp-frontend
-    runtime: static
     rootDir: SmartCityApp/frontend
     buildCommand: npm install && npm run build
     staticPublishPath: dist
-    plan: free
     envVars:
       - key: VITE_API_URL
         sync: false
