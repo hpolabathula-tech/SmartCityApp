@@ -20,7 +20,8 @@ services:
         value: llama-3.3-70b-versatile
 
   # ─── Frontend Static Site ────────────────────────────────────────────────────
-  - type: static
+  - type: web
+    env: static
     name: smartcityapp-frontend
     rootDir: SmartCityApp/frontend
     buildCommand: npm install && npm run build
