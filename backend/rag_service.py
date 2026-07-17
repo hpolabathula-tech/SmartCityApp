@@ -18,17 +18,27 @@ mongo_uri = os.getenv("MONGO_URI", "mongodb://127.0.0.1:27017/smartcity_db")
 local_fallback_uri = "mongodb://127.0.0.1:27017/smartcity_db"
 
 try:
-    client = MongoClient(mongo_uri, serverSelectionTimeoutMS=8000, tls=True, tlsAllowInvalidCertificates=True)
+    client = MongoClient(mongo_uri, serverSelectionTimeoutMS=2000, tls=True, tlsAllowInvalidCertificates=True)
     client.admin.command("ping")
     db = client.get_database()
+    print("[DB-RAG] Connected to MongoDB Atlas")
 except Exception:
     try:
-        client = MongoClient(mongo_uri, serverSelectionTimeoutMS=8000)
+        client = MongoClient(mongo_uri, serverSelectionTimeoutMS=2000)
         client.admin.command("ping")
         db = client.get_database()
+        print("[DB-RAG] Connected to MongoDB Atlas (default TLS)")
     except Exception:
-        client = MongoClient(local_fallback_uri, serverSelectionTimeoutMS=8000)
-        db = client.get_database()
+        try:
+            client = MongoClient(local_fallback_uri, serverSelectionTimeoutMS=2000)
+            client.admin.command("ping")
+            db = client.get_database()
+            print("[DB-RAG] Connected to local MongoDB fallback")
+        except Exception:
+            print("[DB-RAG] MongoDB not available. Falling back to mongomock...")
+            import mongomock
+            client = mongomock.MongoClient()
+            db = client.get_database("smartcity_db")
 
 
 def extract_text_from_pdf(file_path):

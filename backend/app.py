@@ -39,7 +39,7 @@ local_fallback_uri = "mongodb://127.0.0.1:27017/smartcity_db"
 db = None
 
 def _try_connect(uri, **kwargs):
-    c = MongoClient(uri, serverSelectionTimeoutMS=8000, **kwargs)
+    c = MongoClient(uri, serverSelectionTimeoutMS=2000, **kwargs)
     c.admin.command("ping")
     return c
 
@@ -56,14 +56,17 @@ except Exception as e1:
         db = client.get_database()
     except Exception as e2:
         print(f"[DB] WARNING: Could not connect to Atlas: {e2}")
-        if mongo_uri != local_fallback_uri:
-            try:
-                print(f"[DB] Trying local MongoDB fallback at {local_fallback_uri}...")
-                client = _try_connect(local_fallback_uri)
-                print(f"[DB] Successfully connected to local MongoDB.")
-                db = client.get_database()
-            except Exception as e3:
-                print(f"[DB] ERROR: Local MongoDB fallback also failed: {e3}")
+        try:
+            print(f"[DB] Trying local MongoDB fallback at {local_fallback_uri}...")
+            client = _try_connect(local_fallback_uri)
+            print(f"[DB] Successfully connected to local MongoDB.")
+            db = client.get_database()
+        except Exception as e3:
+            print(f"[DB] ERROR: Local MongoDB fallback also failed: {e3}")
+            print("[DB] Falling back to mongomock in-memory MongoDB...")
+            import mongomock
+            client = mongomock.MongoClient()
+            db = client.get_database("smartcity_db")
 
 if db is None:
     raise SystemExit("[DB] No MongoDB connection available. Set MONGO_URI or start local MongoDB.")
