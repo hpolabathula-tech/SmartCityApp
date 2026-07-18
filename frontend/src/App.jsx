@@ -13,6 +13,8 @@ export default function App() {
     return saved ? JSON.parse(saved) : false;
   });
 
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
   useEffect(() => {
     const cachedUser = localStorage.getItem('user');
     if (token && cachedUser) {
@@ -28,6 +30,17 @@ export default function App() {
       document.documentElement.removeAttribute('data-theme');
     }
   }, [isDarkMode]);
+
+  useEffect(() => {
+    if (isMobileMenuOpen) {
+      document.body.style.overflow = 'hidden';
+    } else {
+      document.body.style.overflow = '';
+    }
+    return () => {
+      document.body.style.overflow = '';
+    };
+  }, [isMobileMenuOpen]);
 
   const handleLoginSuccess = (userToken, userData) => {
     setToken(userToken);
@@ -45,6 +58,7 @@ export default function App() {
     setToken('');
     setUser(null);
     setActiveTab('chat');
+    setIsMobileMenuOpen(false);
   };
 
   // If not authenticated, render Login
@@ -52,11 +66,26 @@ export default function App() {
     return <Login onLoginSuccess={handleLoginSuccess} />;
   }
 
+  const selectTab = (tab) => {
+    setActiveTab(tab);
+    setIsMobileMenuOpen(false);
+  };
+
   return (
     <div style={styles.appLayout}>
       {/* Top Header */}
       <header style={styles.header}>
         <div style={styles.logoGroup}>
+          <button
+            onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+            className="mobile-hamburger-btn hover-lift active-scale"
+            aria-label="Toggle Navigation Menu"
+            aria-expanded={isMobileMenuOpen}
+          >
+            <span className="material-symbols-outlined">
+              {isMobileMenuOpen ? 'close' : 'menu'}
+            </span>
+          </button>
           <span className="material-symbols-outlined" style={styles.logoIcon}>hub</span>
           <span style={styles.logoText}>Smart City Knowledge Portal</span>
         </div>
@@ -71,23 +100,32 @@ export default function App() {
               {isDarkMode ? 'light_mode' : 'dark_mode'}
             </span>
           </button>
-          <div style={styles.badge} className="hover-lift">
+          <div style={styles.badge} className="header-badge hover-lift">
             <span style={styles.badgeDot}></span>
             <span style={styles.badgeLabel}>
               {user.role === 'admin' ? 'Administrator' : 'Citizen Access'}
             </span>
           </div>
-          <button onClick={handleLogout} style={styles.logoutBtn} className="hover-lift active-scale">
+          <button onClick={handleLogout} style={styles.logoutBtn} className="logout-btn hover-lift active-scale">
             <span className="material-symbols-outlined">logout</span>
-            <span>Sign Out</span>
+            <span className="logout-btn-text">Sign Out</span>
           </button>
         </div>
       </header>
 
       {/* Main Grid: Navigation Sidebar & Content Workspace */}
       <div style={styles.mainContainer}>
-        {/* Sidebar Nav */}
-        <aside style={styles.sidebar}>
+        {/* Semi-transparent dark overlay for mobile menu */}
+        {isMobileMenuOpen && (
+          <div
+            className="mobile-overlay"
+            onClick={() => setIsMobileMenuOpen(false)}
+            aria-hidden="true"
+          />
+        )}
+
+        {/* Sidebar Nav Drawer */}
+        <aside style={styles.sidebar} className={`sidebar-drawer ${isMobileMenuOpen ? 'mobile-open' : ''}`}>
           <div style={styles.userCard}>
             <div style={styles.userAvatar}>
               {user.role === 'admin' ? 'AD' : 'CI'}
@@ -102,7 +140,7 @@ export default function App() {
 
           <nav style={styles.navMenu}>
             <button
-              onClick={() => setActiveTab('chat')}
+              onClick={() => selectTab('chat')}
               style={{
                 ...styles.navBtn,
                 backgroundColor: activeTab === 'chat' ? 'var(--color-primary-container)' : 'transparent',
@@ -115,7 +153,7 @@ export default function App() {
             </button>
 
             <button
-              onClick={() => setActiveTab('flow')}
+              onClick={() => selectTab('flow')}
               style={{
                 ...styles.navBtn,
                 backgroundColor: activeTab === 'flow' ? 'var(--color-primary-container)' : 'transparent',
@@ -129,7 +167,7 @@ export default function App() {
 
             {user.role === 'admin' && (
               <button
-                onClick={() => setActiveTab('admin')}
+                onClick={() => selectTab('admin')}
                 style={{
                   ...styles.navBtn,
                   backgroundColor: activeTab === 'admin' ? 'var(--color-primary-container)' : 'transparent',
